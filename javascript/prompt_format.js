@@ -1,246 +1,357 @@
 class LeFormatter {
 
-	static #cachedCardsInternal = null;
-	static #aliasInternal = null;
+    static cachedCards = null
 
-	static forceReload() {
-		this.#cachedCardsInternal = null;
-		this.#aliasInternal = null;
-	}
+    static cacheEmbedding() {
+        this.cachedCards = []
+        const extras = document.getElementById('txt2img_extra_tabs').querySelectorAll('span.name')
+        extras.forEach((card) => {
+            if (card.innerHTML.includes('_'))
+                this.cachedCards.push(card.innerHTML)
+        })
+    }
 
-	/** @returns {string[]} */
-	static get #cachedCards() {
-		if (this.#cachedCardsInternal == null)
-			this.#cachedCardsInternal = pfConfigs.cacheCards();
+    static manualButton(text, id, { onClick }) {
+        const button = gradioApp().getElementById(id).cloneNode()
 
-		return this.#cachedCardsInternal;
-	}
+        button.id = 'manual-format'
+        button.classList.remove('gr-button-lg', 'gr-button-primary', 'lg', 'primary')
+        button.classList.add('secondary')
+        button.textContent = text
+        button.addEventListener('click', onClick)
 
-	/** @returns {Map<RegExp, string>} */
-	static get #alias() {
-		if (this.#aliasInternal == null)
-			this.#aliasInternal = pfConfigs.getTagAlias();
+        return button
+    }
 
-		return this.#aliasInternal;
-	}
+    static injectButton(id, { onClick }) {
+        const button = gradioApp().getElementById(id)
+        button.addEventListener('click', onClick)
+    }
 
-	/**
-	 * @param {HTMLTextAreaElement} textArea
-	 * @param {boolean} dedupe
-	 * @param {boolean} removeUnderscore
-	 * @param {boolean} autoRefresh
-	 * @param {boolean} appendComma
-	 */
-	static formatPipeline(textArea, dedupe, removeUnderscore, autoRefresh, appendComma) {
-		const lines = textArea.value.split('\n');
+    static checkbox(text, def, { onChange }) {
+        const label = document.createElement('label')
+        label.style.display = 'flex'
+        label.style.alignItems = 'center'
+        label.style.margin = '2px 8px'
 
-		for (let i = 0; i < lines.length; i++)
-			lines[i] = this.formatString(lines[i], dedupe, removeUnderscore);
+        const checkbox = gradioApp().querySelector('input[type=checkbox]').cloneNode()
+        checkbox.checked = def
+        checkbox.addEventListener('change', (event) => {
+            onChange(event.target.checked)
+        })
 
-		if (!appendComma)
-			textArea.value = lines.join('\n');
-		else {
-			const val = lines.join(',\n');
-			textArea.value = val.replace(/\n,\n/g, '\n\n');
-		}
+        const span = document.createElement('span')
+        span.style.marginLeft = 'var(--size-2, 4px)'
+        span.textContent = text
 
-		if (autoRefresh)
-			updateInput(textArea);
-	}
+        label.appendChild(checkbox)
+        label.appendChild(span)
 
-	/** @param {string} input @param {boolean} dedupe @param {boolean} removeUnderscore @returns {string} */
-	static formatString(input, dedupe, removeUnderscore) {
+        return label
+    }
 
-		// Remove Underscore
-		input = removeUnderscore ? this.#removeUnderscore(input) : input;
+    static removeUnderscoreSmart(remove, tag) {
+        if (!remove)
+            return tag;
+    
+        // Replace underscores, but skip those enclosed with '__'
+        return tag.replace(/<[^>]*>|__.*?__|_/g, function(match) {
+            if (match === "_") return " ";
+            return match;
+        });
+    }
 
-		// Fix Commas inside Brackets
-		input = input
-			.replace(/[,\s]+\)/g, '),')
-			.replace(/[,\s]+\]/g, '],')
-			.replace(/\([,\s]+/g, ',(')
-			.replace(/\[[,\s]+/g, ',[');
+    static formatString(input, dedupe, removeUnderscore, removePipes) {
+        // Remove Duplicate
+        if (dedupe) {
+            const temp = input.split(',')
 
-		// Fix Bracket & Space
-		input = input
-			.replace(/\s+\)/g, ')')
-			.replace(/\s+\]/g, ']')
-			.replace(/\(\s+/g, '(')
-			.replace(/\[\s+/g, '[')
-			.replace(/\<\s+/g, '<')
-			.replace(/\s+\>/g, '>');
+            const cleanArray = []
+            const finalArray = []
 
-		// Remove Space around Syntax
-		input = input
-			.replace(/\s*\|\s*/g, '|')
-			.replace(/\s*\:\s*/g, ':');
+            temp.forEach((tag) => {
+                const cleanedTag = tag.replace(/\[|\]|\(|\)|\s+/g, '').trim()
 
-		// Sentence -> Tags
-		let tags = input.split(',').map(word => word.trim());
+                if (!cleanArray.includes(cleanedTag)) {
+                    cleanArray.push(cleanedTag)
+                    finalArray.push(tag)
+                    return
+                }
 
-		// Remove Duplicate
-		tags = dedupe ? this.#dedupe(tags) : tags;
+                if (/^(AND|BREAK)$/.test(cleanedTag)) {
+                    finalArray.push(tag)
+                    return
+                }
 
-		// Remove extra Spaces
-		input = tags.join(', ').replace(/\s+/g, ' ');
+                finalArray.push(tag.replace(cleanedTag, ''))
+            })
 
-		// Remove Empty Brackets
-		while (/\(\s*\)|\[\s*\]/.test(input))
-			input = input.replace(/\(\s*\)|\[\s*\]/g, '');
+            input = finalArray.join(', ')
+        }
 
-		return input.split(',').map(word => word.trim()).filter(word => word).join(', ');
-	}
+        // Fix Bracket & Comma
+        input = input.replace(/,\s*\)/g, '),').replace(/,\s*\]/g, '],').replace(/\(\s*,/g, ',(').replace(/\[\s*,/g, ',[')
 
-	/** @param {string[]} input @returns {string[]} */
-	static #dedupe(input) {
-		const KEYWORD = /^(AND|BREAK)$/;
-		const uniqueSet = new Set();
-		const results = [];
+        // Remove Commas
+        let tags = input.split(',').map(word => this.removeUnderscoreSmart(removeUnderscore, word.trim())).filter(word => word !== '')
 
-		for (const tag of input) {
-			const cleanedTag = tag.replace(/\[|\]|\(|\)/g, '').replace(/\s+/g, ' ').trim();
+        // Remove Stray Brackets
+        const patterns = [/^\(+$/, /^\)+$/, /^\[+$/, /^\]+$/]
+        tags = tags.filter(word => !patterns[0].test(word)).filter(word => !patterns[1].test(word)).filter(word => !patterns[2].test(word)).filter(word => !patterns[3].test(word))
 
-			if (KEYWORD.test(cleanedTag)) {
-				results.push(tag);
-				continue;
-			}
+        // Remove Spaces
+        input = tags.join(', ').replace(/\s+/g, ' ')
 
-			let substitute = null;
-			for (const [pattern, mainTag] of this.#alias) {
-				if (pattern.test(cleanedTag)) {
-					substitute = mainTag;
-					break;
-				}
-			}
+        // Fix Bracket & Space
+        input = input.replace(/\s+\)/g, ')').replace(/\s+\]/g, ']').replace(/\(\s+/g, '(').replace(/\[\s+/g, '[')
 
-			if ((substitute == null) && (!uniqueSet.has(cleanedTag))) {
-				uniqueSet.add(cleanedTag);
-				results.push(tag);
-				continue;
-			}
+        // Fix Empty Bracket
+        input = input.replace(/\(\s+\)/g, '').replace(/\[\s+\]/g, '')
 
-			if ((substitute != null) && (!uniqueSet.has(substitute))) {
-				uniqueSet.add(substitute);
-				results.push(tag.replace(cleanedTag, substitute));
-				continue;
-			}
+        while (input.match(/\(\s*\)|\[\s*\]/g))
+            input = input.replace(/\(\s*\)|\[\s*\]/g, '')
 
-			results.push(tag.replace(cleanedTag, ''));
-		}
+        // Remove ||
+        if (removePipes) {
+            input = input.replace(/\s*\|\|\s*/g, ', ');
+        }
 
-		return results;
-	}
+        return input.split(',').map(word => word.trim()).filter(word => word !== '').join(', ')
+    }
 
-	/** @param {string} input @returns {string} */
-	static #removeUnderscore(input) {
-		if (!input.trim())
-			return "";
+    static grabBrackets(str, index) {
+        let openBracket = -1
+        let closeBracket = -1
 
-		const syntax = /\,\|\:\<\>\(\)\[\]\{\}/;
-		const pattern = new RegExp(`([${syntax.source}]+|[^${syntax.source}]+)`, 'g');
-		const parts = input.match(pattern);
+        for (let i = index; i >= 0; i--) {
+            if (str[i] === '(') {
+                openBracket = i
+                break;
+            }
+            if (str[i] === ')' && i !== index) {
+                break;
+            }
+        }
 
-		const processed = parts.map((part) => {
-			if (new RegExp(`[${syntax.source}]+`).test(part))
-				return part;
-			if (/^\s+$/.test(part))
-				return part;
+        for (let i = index; i < str.length; i++) {
+            if (str[i] === ')') {
+                closeBracket = i
+                break;
+            }
+            if (str[i] === '(' && i !== index) {
+                break;
+            }
+        }
 
-			if (!this.#cachedCards.includes(part))
-				part = part.replaceAll('_', ' ');
+        if (openBracket !== -1 && closeBracket !== -1 && openBracket !== closeBracket)
+            return [openBracket, closeBracket]
+        else
+            return null
+    }
 
-			return part;
-		});
+    static injectTagShift(id) {
+        const textarea = gradioApp().getElementById(id).querySelector('textarea')
 
-		return processed.join('');
-	}
+        textarea.addEventListener('wheel', (event) => {
+            if (event.shiftKey) {
+                event.preventDefault()
+
+                if (textarea.selectionStart !== textarea.selectionEnd)
+                    return;
+
+                if (event.deltaY === 0)
+                    return;
+
+                const shift = event.deltaY < 0 ? 1 : -1
+                const tags = textarea.value.split(',').map(t => t.trim())
+
+                var cursor = textarea.selectionStart
+
+                var index = 0
+
+                for (let i = 0; i < textarea.selectionStart; i++) {
+                    if (textarea.value[i] === ',')
+                        index++
+                }
+
+                if (index === 0 && shift === -1)
+                    return;
+                if (index === tags.length - 1 && shift === 1)
+                    return;
+
+                const shifted = []
+
+                if (shift < 0) {
+                    for (let i = 0; i < index - 1; i++)
+                        shifted.push(tags[i])
+
+                    shifted.push(tags[index])
+                    shifted.push(tags[index - 1])
+
+                    cursor -= tags[index - 1].length + 2
+
+                    for (let i = index + 1; i < tags.length; i++)
+                        shifted.push(tags[i])
+                } else {
+                    for (let i = 0; i < index; i++)
+                        shifted.push(tags[i])
+
+                    shifted.push(tags[index + 1])
+                    shifted.push(tags[index])
+
+                    cursor -= tags[index + 1].length * -1 - 2
+
+                    for (let i = index + 2; i < tags.length; i++)
+                        shifted.push(tags[i])
+                }
+
+                textarea.value = shifted.join(', ')
+
+                textarea.selectionStart = cursor
+                textarea.selectionEnd = cursor
+
+                updateInput(textarea)
+            }
+        })
+    }
+
+    static injectBracketEscape(id) {
+        const textarea = gradioApp().getElementById(id).querySelector('textarea')
+
+        textarea.addEventListener('keydown', (event) => {
+            if (event.ctrlKey && event.key === '\\') {
+                event.preventDefault()
+
+                let cursorPosition = textarea.selectionStart
+
+                if (textarea.selectionStart !== textarea.selectionEnd)
+                    cursorPosition++
+
+                let result = LeFormatter.grabBrackets(textarea.value, cursorPosition)
+
+                if (result) {
+                    const original = textarea.value
+
+                    if (result[0] !== 0 && textarea.value[result[0] - 1] === '\\' && textarea.value[result[1] - 1] === '\\') {
+                        textarea.value = original.slice(0, result[0] - 1) + original.slice(result[0] - 1, result[1]).replace(/\\/g, '') + original.slice(result[1])
+                        textarea.selectionStart = result[0] - 1
+                        textarea.selectionEnd = result[1] - 1
+                    }
+                    else {
+                        textarea.value = original.slice(0, result[0]) + '\\' + original.slice(result[0], result[1]) + '\\' + original.slice(result[1])
+                        textarea.selectionStart = result[0]
+                        textarea.selectionEnd = result[1] + 3
+                    }
+
+                    updateInput(textarea)
+                }
+            }
+        })
+    }
+
 }
 
-onUiLoaded(() => {
+onUiLoaded(async () => {
+    const Modes = ['txt', 'img']
 
-	const config = new pfConfigs();
-	const formatter = pfUI.setupUIs(config.autoRun, config.dedupe, config.removeUnderscore);
+    let autoRun = false // Auto Formatのデフォルト値をfalseに設定
+    let dedupe = false
+    let removeUnderscore = false
+    let removePipes = false // Remove || のための変数を追加
 
-	document.addEventListener('keydown', (e) => {
-		if (e.altKey && e.shiftKey && e.code === 'KeyF') {
-			e.preventDefault();
-			for (const field of config.promptFields)
-				LeFormatter.formatPipeline(field, config.dedupe, config.removeUnderscore, true, config.comma);
-		}
-	});
+    try {
+        const temp = gradioApp().getElementById('pf-config-true')
+        temp.remove()
+        refreshInput = false
+    } catch {
+        refreshInput = true
+    }
 
-	formatter.auto.addEventListener("change", () => {
-		config.autoRun = formatter.auto.checked;
-		formatter.manual.style.display = config.autoRun ? 'none' : 'flex';
-	});
+    const manualBtn = LeFormatter.manualButton('Format', 'txt2img_generate', {
+        onClick: () => {
+            const ids = ['txt2img_prompt', 'txt2img_neg_prompt', 'img2img_prompt', 'img2img_neg_prompt']
 
-	formatter.dedupe.addEventListener("change", () => {
-		config.dedupe = formatter.dedupe.checked;
-	});
+            ids.forEach((id) => {
+                const textArea = gradioApp().getElementById(id).querySelector('textarea')
 
-	formatter.underscore.addEventListener("change", () => {
-		config.removeUnderscore = formatter.underscore.checked;
-		formatter.refresh.style.display = config.removeUnderscore ? 'flex' : 'none';
-	});
+                let lines = textArea.value.split('\n')
 
-	formatter.manual.addEventListener("click", () => {
-		for (const field of config.promptFields)
-			LeFormatter.formatPipeline(field, config.dedupe, config.removeUnderscore, config.refresh, config.comma);
-	});
+                for (let i = 0; i < lines.length; i++)
+                    lines[i] = LeFormatter.formatString(lines[i], dedupe, removeUnderscore, removePipes) // Updated to include new features
 
-	formatter.refresh.addEventListener("click", () => {
-		LeFormatter.forceReload();
-	});
+                textArea.value = lines.join('\n')
+                updateInput(textArea)
+            })
+        }
+    })
 
-	const tools = document.getElementById('quicksettings');
-	tools.after(formatter);
+    manualBtn.style.display = 'block'
 
-	/** Expandable List of IDs in 1 place */
-	const IDs = [
-		'txt2img_generate',
-		'txt2img_enqueue',
-		'img2img_generate',
-		'img2img_enqueue'
-	];
+    const autoCB = LeFormatter.checkbox('Auto Format', autoRun, {
+        onChange: (checked) => {
+            autoRun = checked
+            manualBtn.style.display = autoRun ? 'none' : 'block'
+        }
+    })
 
-	for (const id of IDs) {
-		const button = document.getElementById(id);
-		button?.addEventListener('click', () => {
-			if (config.autoRun) {
-				for (const field of config.promptFields)
-					LeFormatter.formatPipeline(field, config.dedupe, config.removeUnderscore, config.refresh, config.comma);
-			}
-		});
-	}
+    const dedupeCB = LeFormatter.checkbox('Remove Duplicates', dedupe, {
+        onChange: (checked) => { dedupe = checked }
+    })
 
-	if (config.paste) {
-		for (const field of config.promptFields) {
-			field.addEventListener('paste', (event) => {
-				event.preventDefault();
+    const underlineCB = LeFormatter.checkbox('Remove Underscores', removeUnderscore, {
+        onChange: (checked) => {
+            removeUnderscore = checked
+            if (LeFormatter.cachedCards == null)
+                LeFormatter.cacheEmbedding()
+        }
+    })
 
-				let paste = (event.clipboardData || window.clipboardData).getData('text');
+    const removePipesCB = LeFormatter.checkbox('Remove ||', removePipes, {
+        onChange: (checked) => { removePipes = checked }
+    })
 
-				if (config.booru) {
-					paste = paste.replace(/\s[\d.]+[kM]?|\?\s+/g, ", ");
-					for (const excl of ["Artist", "Characters", "Character", "Copyright", "Tags", "Tag", "General"])
-						paste = paste.replace(excl, "");
+    const formatter = document.createElement('div')
+    formatter.id = 'le-formatter'
+    formatter.style.display = 'flex'
+    formatter.style.flexDirection = 'row'
 
-					paste = paste.replaceAll("(", "\\(");
-					paste = paste.replaceAll(")", "\\)");
-				}
+    formatter.appendChild(autoCB)
+    formatter.appendChild(manualBtn)
+    formatter.appendChild(dedupeCB)
+    formatter.appendChild(underlineCB)
+    formatter.appendChild(removePipesCB)
 
-				paste = LeFormatter.formatString(paste, config.dedupe, config.removeUnderscore);
+    const tools = document.getElementById('quicksettings')
+    tools.after(formatter)
 
-				const currentText = field.value;
-				const cursorPosition = field.selectionStart;
+    Modes.forEach((mode) => {
 
-				const newText = currentText.slice(0, cursorPosition) + paste + currentText.slice(field.selectionEnd);
-				field.value = newText;
-				field.selectionStart = field.selectionEnd = cursorPosition + paste.length;
+        LeFormatter.injectButton(mode + '2img_generate', {
+            onClick: () => {
+                if (!autoRun)
+                    return;
 
-				updateInput(field);
-			});
-		}
-	}
+                const ids = [mode + '2img_prompt', mode + '2img_neg_prompt']
+                const textAreas = [gradioApp().getElementById(ids[0]).querySelector('textarea'), gradioApp().getElementById(ids[1]).querySelector('textarea')]
 
-});
+                let lines = [textAreas[0].value.split('\n'), textAreas[1].value.split('\n')]
+
+                for (let m = 0; m < 2; m++) {
+
+                    for (let i = 0; i < lines[m].length; i++)
+                        lines[m][i] = LeFormatter.formatString(lines[m][i], dedupe, removeUnderscore, removePipes) // Updated to include new features
+
+                    textAreas[m].value = lines[m].join('\n')
+
+                    if (refreshInput)
+                        updateInput(textAreas[m])
+                }
+            }
+        })
+
+        LeFormatter.injectBracketEscape(mode + '2img_prompt')
+        LeFormatter.injectBracketEscape(mode + '2img_neg_prompt')
+        LeFormatter.injectTagShift(mode + '2img_prompt')
+        LeFormatter.injectTagShift(mode + '2img_neg_prompt')
+    })
+})
